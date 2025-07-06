@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState } from "react"
+import { useState, useRef } from "react"
 import Papa from "papaparse"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -23,36 +23,38 @@ export default function UploadPage() {
   const [csvData, setCsvData] = useState<CsvRow[]>([])
   const [columns, setColumns] = useState<string[]>([])
   const [selectedPlaceholders, setSelectedPlaceholders] = useState<string[]>([])
-  const [emailTemplate, setEmailTemplate] = useState("Hello {{Name}}, your order {{OrderID}} is ready.")
+  const [emailTemplate, setEmailTemplate] = useState("")
   const [sending, setSending] = useState(false)
   const [scraping, setScraping] = useState(false)
   const [scrapeUrl, setScrapeUrl] = useState("")
   const [activeTab, setActiveTab] = useState("upload")
+  const [timer, setTimer] = useState(60)
+  const [sentCount, setSentCount] = useState(0)
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
   const searchParams = useSearchParams();
   const router = useRouter();
 
   useEffect(() => {
-    // 1. Check if access token exists and is valid (you'd likely check localStorage or cookie)
-    const accessToken = localStorage.getItem("ZOHO_ACCESS_TOKEN");
-    const tokenExpiry = localStorage.getItem("ZOHO_TOKEN_EXPIRY"); // store expiry timestamp
+    // Check if we have a valid Google access token
+    const accessToken = localStorage.getItem("GOOGLE_ACCESS_TOKEN");
+    const tokenExpiry = localStorage.getItem("GOOGLE_TOKEN_EXPIRY");
 
     const now = Date.now();
     if (!accessToken || (tokenExpiry && now > parseInt(tokenExpiry))) {
-      // 2. Check if we got redirected back with ?code= from Zoho OAuth
+      // Check if we got redirected back with ?code= from Google OAuth
       const code = searchParams?.get("code");
       if (code) {
-        // 3. Exchange the code for tokens by calling your backend API
-        fetch(`/api/oauth/exchange?code=${code}`)
+        // Exchange the code for tokens by calling our backend API
+        fetch(`/api/google/oauth-callback?code=${code}`)
           .then((res) => res.json())
           .then((data) => {
-            if (data.tokenData) {
-              // Save tokens and expiry (assume expires_in is in seconds)
-              localStorage.setItem("ZOHO_ACCESS_TOKEN", data.tokenData.access_token);
+            if (data.access_token) {
+              localStorage.setItem("GOOGLE_ACCESS_TOKEN", data.access_token);
               localStorage.setItem(
-                "ZOHO_TOKEN_EXPIRY",
-                (Date.now() + data.tokenData.expires_in * 1000).toString()
+                "GOOGLE_TOKEN_EXPIRY",
+                (Date.now() + data.expires_in * 1000).toString()
               );
-              localStorage.setItem("ZOHO_REFRESH_TOKEN", data.tokenData.refresh_token);
+              localStorage.setItem("GOOGLE_REFRESH_TOKEN", data.refresh_token);
               // Clean URL to remove code param
               router.replace(window.location.pathname);
             } else {
@@ -60,11 +62,11 @@ export default function UploadPage() {
             }
           });
       } else {
-        // 4. Redirect user to Zoho OAuth consent page
-        const clientId = "1000.B0AOT87DW183BS1JKV17KUQP4DPUBX";
+        // Redirect user to Google OAuth consent page
+        const clientId = "1081948288134-ku1m6c9qpq2rjk06tj3s6s9mtpa63peh.apps.googleusercontent.com";
         const redirectUri = encodeURIComponent(window.location.origin);
-        const scope = encodeURIComponent("ZohoMail.messages.CREATE"); // adjust scopes
-        const oauthUrl = `https://accounts.zoho.com/oauth/v2/auth?scope=${scope}&client_id=${clientId}&response_type=code&access_type=offline&redirect_uri=${redirectUri}`;
+        const scope = encodeURIComponent("https://www.googleapis.com/auth/gmail.send");
+        const oauthUrl = `https://accounts.google.com/o/oauth2/v2/auth?scope=${scope}&access_type=offline&include_granted_scopes=true&response_type=code&redirect_uri=${redirectUri}&client_id=${clientId}`;
         window.location.href = oauthUrl;
       }
     }
@@ -110,11 +112,20 @@ export default function UploadPage() {
       return
     }
 
+    const accessToken = localStorage.getItem("GOOGLE_ACCESS_TOKEN")
+    if (!accessToken) {
+      alert("Please authenticate with Google first.")
+      return
+    }
+
     setSending(true)
     try {
       const response = await fetch("/api/email/send-batch", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${accessToken}`
+        },
         body: JSON.stringify({
           csvData,
           emailTemplate,
@@ -126,7 +137,7 @@ export default function UploadPage() {
         throw new Error(error || "Failed to send emails")
       }
 
-      alert("Emails scheduled successfully!")
+      alert("Emails sent successfully!")
     } catch (err) {
       alert((err as Error).message)
     } finally {
@@ -168,6 +179,38 @@ export default function UploadPage() {
       setScraping(false)
     }
   }
+
+  // Timer effect
+  useEffect(() => {
+    if (sending) {
+      setTimer(60)
+      timerRef.current = setInterval(() => {
+        setTimer((prev) => {
+          if (prev <= 1) return 60
+          return prev - 1
+        })
+      }, 1000)
+    } else {
+      setTimer(60)
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [sending])
+
+  // Listen for sentCount updates from backend
+  useEffect(() => {
+    if (!sending) return
+    const interval = setInterval(async () => {
+      const res = await fetch("/api/email/sent-count")
+      if (res.ok) {
+        const data = await res.json()
+        setSentCount(data.count)
+      }
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [sending])
 
   return (
     <div className="container mx-auto py-10 px-4 max-w-4xl">
@@ -245,6 +288,12 @@ export default function UploadPage() {
         </Tabs>
 
         <CardContent>
+          {/* Timer and sent count UI */}
+          <div className="flex items-center gap-6 mb-4">
+            <div className="text-lg font-mono">Next email in: <span className="font-bold">{timer}s</span></div>
+            <div className="text-lg font-mono">Emails sent: <span className="font-bold">{sentCount}</span></div>
+          </div>
+
           {columns.length > 0 && (
             <>
               <Separator className="my-6" />
@@ -324,7 +373,7 @@ export default function UploadPage() {
               setCsvData([])
               setColumns([])
               setSelectedPlaceholders([])
-              setEmailTemplate("Hello {{Name}}, your order {{OrderID}} is ready.")
+              setEmailTemplate("")
             }}
           >
             Reset

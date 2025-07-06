@@ -1,73 +1,65 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { incrementSentCount, resetSentCount } from './sent-count';
 
-type CsvRow = Record<string, string>;
-
-const SEND_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
-const MAX_SEND_COUNT = 20; // max emails to send
-
-function personalizeTemplate(template: string, row: CsvRow) {
-  let output = template;
-  Object.entries(row).forEach(([key, value]) => {
-    const regex = new RegExp(`{{\\s*${key}\\s*}}`, 'g');
-    output = output.replace(regex, value);
-  });
-  return output;
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    res.status(405).end('Method Not Allowed');
-    return;
+    return res.status(405).json({ message: 'Method not allowed' });
   }
 
-  const { csvData, emailTemplate } = req.body as {
-    csvData: CsvRow[];
-    emailTemplate: string;
-  };
+  const { csvData, emailTemplate } = req.body;
+  const accessToken = req.headers.authorization?.replace('Bearer ', '');
 
-  if (!csvData || !emailTemplate) {
-    res.status(400).json({ error: 'Missing csvData or emailTemplate' });
-    return;
+  if (!accessToken) {
+    return res.status(401).json({ message: 'No access token provided' });
   }
 
-  const sendCount = Math.min(csvData.length, MAX_SEND_COUNT);
+  try {
+    // Reset sent count at the start
+    resetSentCount();
+    // Limit to 450 emails
+    const limitedData = csvData.slice(0, 450);
+    for (let i = 0; i < limitedData.length; i++) {
+      const row = limitedData[i];
+      // Replace placeholders in the template
+      let emailBody = emailTemplate;
+      Object.entries(row).forEach(([key, value]) => {
+        const regex = new RegExp(`{{\\s*${key}\\s*}}`, 'g');
+        emailBody = emailBody.replace(regex, value as string);
+      });
 
-  for (let i = 0; i < sendCount; i++) {
-    const row = csvData[i];
-    const personalizedContent = personalizeTemplate(emailTemplate, row);
-    const to = row['email'] || row['Email'] || row['to']; // adjust per your CSV
+      // Send email using our Gmail API endpoint
+      const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/google/send-email`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          to: row.email, // Assumes there's an 'email' column in the CSV
+          subject: 'Your Email Subject', // You might want to make this configurable
+          body: emailBody,
+        }),
+      });
 
-    if (!to) {
-      console.warn(`Skipping row ${i} due to missing email field`);
-      continue;
-    }
-
-    setTimeout(async () => {
-      try {
-        const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/zoho/send-email`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            to,
-            subject: 'Your Subject Here', // Update or make dynamic if needed
-            content: personalizedContent,
-          }),
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          console.error(`Failed to send email to ${to}:`, errorData);
-        } else {
-          console.log(`Email sent to ${to}`);
-        }
-      } catch (error) {
-        console.error(`Error sending email to ${to}:`, error);
+      if (!response.ok) {
+        console.error(`Failed to send email to ${row.email}`);
+      } else {
+        console.log(`Sent email to ${row.email}`);
+        incrementSentCount();
       }
-    }, i * SEND_INTERVAL_MS);
-  }
 
-  res.status(200).json({ message: `Scheduled ${sendCount} emails over ~${(sendCount - 1) * 3} minutes.` });
+      // Wait 1 minute before sending the next email (except after the last one)
+      if (i < limitedData.length - 1) {
+        await delay(60000);
+      }
+    }
+    res.status(200).json({ message: 'All emails sent (up to 450, 1 min interval)' });
+  } catch (error) {
+    console.error('Batch email error:', error);
+    res.status(500).json({ message: 'Failed to send batch emails' });
+  }
 }
