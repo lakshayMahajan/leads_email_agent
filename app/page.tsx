@@ -24,12 +24,14 @@ export default function UploadPage() {
   const [columns, setColumns] = useState<string[]>([])
   const [selectedPlaceholders, setSelectedPlaceholders] = useState<string[]>([])
   const [emailTemplate, setEmailTemplate] = useState("")
+  const [subject, setSubject] = useState("")
   const [sending, setSending] = useState(false)
   const [scraping, setScraping] = useState(false)
   const [scrapeUrl, setScrapeUrl] = useState("")
   const [activeTab, setActiveTab] = useState("upload")
-  const [timer, setTimer] = useState(60)
+  const [timer, setTimer] = useState(180)
   const [sentCount, setSentCount] = useState(0)
+  const [log, setLog] = useState<string[]>([])
   const timerRef = useRef<NodeJS.Timeout | null>(null)
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -111,6 +113,10 @@ export default function UploadPage() {
       alert("Please write an email template.")
       return
     }
+    if (!subject) {
+      alert("Please enter an email subject.")
+      return
+    }
 
     const accessToken = localStorage.getItem("GOOGLE_ACCESS_TOKEN")
     if (!accessToken) {
@@ -119,7 +125,9 @@ export default function UploadPage() {
     }
 
     setSending(true)
+    setLog([])
     try {
+      setLog((prev) => [...prev, "Starting email batch..."])
       const response = await fetch("/api/email/send-batch", {
         method: "POST",
         headers: { 
@@ -129,16 +137,20 @@ export default function UploadPage() {
         body: JSON.stringify({
           csvData,
           emailTemplate,
+          subject,
         }),
       })
 
       if (!response.ok) {
         const error = await response.text()
+        setLog((prev) => [...prev, `Error: ${error || "Failed to send emails"}`])
         throw new Error(error || "Failed to send emails")
       }
 
+      setLog((prev) => [...prev, "Emails sent successfully!"])
       alert("Emails sent successfully!")
     } catch (err) {
+      setLog((prev) => [...prev, `Error: ${(err as Error).message}`])
       alert((err as Error).message)
     } finally {
       setSending(false)
@@ -183,15 +195,15 @@ export default function UploadPage() {
   // Timer effect
   useEffect(() => {
     if (sending) {
-      setTimer(60)
+      setTimer(180)
       timerRef.current = setInterval(() => {
         setTimer((prev) => {
-          if (prev <= 1) return 60
+          if (prev <= 1) return 180
           return prev - 1
         })
       }, 1000)
     } else {
-      setTimer(60)
+      setTimer(180)
       if (timerRef.current) clearInterval(timerRef.current)
     }
     return () => {
@@ -294,6 +306,19 @@ export default function UploadPage() {
             <div className="text-lg font-mono">Emails sent: <span className="font-bold">{sentCount}</span></div>
           </div>
 
+          {/* Subject input */}
+          <div className="mb-4">
+            <Label htmlFor="subject">Email Subject</Label>
+            <Input
+              id="subject"
+              type="text"
+              value={subject}
+              onChange={e => setSubject(e.target.value)}
+              placeholder="Enter email subject..."
+              className="font-mono text-sm"
+            />
+          </div>
+
           {columns.length > 0 && (
             <>
               <Separator className="my-6" />
@@ -374,6 +399,7 @@ export default function UploadPage() {
               setColumns([])
               setSelectedPlaceholders([])
               setEmailTemplate("")
+              setSubject("")
             }}
           >
             Reset
@@ -398,6 +424,12 @@ export default function UploadPage() {
           </Button>
         </CardFooter>
       </Card>
+
+      {/* Log area */}
+      <div className="mt-6 p-3 bg-slate-100 rounded text-xs font-mono max-h-40 overflow-y-auto border border-slate-200">
+        <div className="font-bold mb-1">Log:</div>
+        {log.length === 0 ? <div className="text-slate-400">No log yet.</div> : log.map((line, i) => <div key={i}>{line}</div>)}
+      </div>
     </div>
   )
 }

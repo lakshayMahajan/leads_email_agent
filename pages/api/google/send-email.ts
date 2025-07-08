@@ -5,11 +5,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ message: 'Method not allowed' })
   }
 
-  const { to, subject, body } = req.body
+  let { to, subject, body, row } = req.body
   const accessToken = req.headers.authorization?.replace('Bearer ', '')
 
   if (!accessToken) {
     return res.status(401).json({ message: 'No access token provided' })
+  }
+
+  // If row is provided, replace placeholders in to and subject
+  if (row) {
+    Object.entries(row).forEach(([key, value]) => {
+      const regex = new RegExp(`{{\\s*${key}\\s*}}`, 'g')
+      if (typeof to === 'string') to = to.replace(regex, value as string)
+      if (typeof subject === 'string') subject = subject.replace(regex, value as string)
+    })
   }
 
   try {

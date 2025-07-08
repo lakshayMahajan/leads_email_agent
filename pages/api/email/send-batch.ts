@@ -10,7 +10,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ message: 'Method not allowed' });
   }
 
-  const { csvData, emailTemplate } = req.body;
+  const { csvData, emailTemplate, subject } = req.body;
   const accessToken = req.headers.authorization?.replace('Bearer ', '');
 
   if (!accessToken) {
@@ -39,9 +39,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
-          to: row.email, // Assumes there's an 'email' column in the CSV
-          subject: 'Your Email Subject', // You might want to make this configurable
+          to: row.email, // still send for compatibility
+          subject: subject, // still send for compatibility
           body: emailBody,
+          row, // send the full row for dynamic header templating
         }),
       });
 
@@ -52,12 +53,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         incrementSentCount();
       }
 
-      // Wait 1 minute before sending the next email (except after the last one)
+      // Wait 3 minutes before sending the next email (except after the last one)
       if (i < limitedData.length - 1) {
-        await delay(60000);
+        await delay(180000);
       }
     }
-    res.status(200).json({ message: 'All emails sent (up to 450, 1 min interval)' });
+    res.status(200).json({ message: 'All emails sent (up to 450, 3 min interval)' });
   } catch (error) {
     console.error('Batch email error:', error);
     res.status(500).json({ message: 'Failed to send batch emails' });
